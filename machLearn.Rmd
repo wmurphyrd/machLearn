@@ -1,0 +1,92 @@
+---
+title: "PML-Project"
+author: "WM"
+date: "Saturday, May 23, 2015"
+output: html_document
+---
+
+# Practical Machine Learning Human Activity Recognition Project
+This reports details the use of machine learning techniques to make predictions about the quality of a weight lifting exercise performer's technique. The data were collected from sensors placed on the body and on the dumbells of individuals who performed a curl exercise either correctly or while making one of four common mistakes. The data used are from the citation below:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3b5OLezyo
+
+#Data Preparation
+The data were prepared by excluding identifier variables, converting to numeric data type, and eliminating variables with zero or near zero variance that would not aid in model building. The data also included a numer of calculated summary variables that appear on occasional records and describe measurements over a window of time. Since these summary measures will not be available when making predictions, they were also excluded (this was accomplished by hiding the records with the summary data from the variance estimations, making the variables appear to have zero variance).
+
+```{r setup, message=FALSE, warning=FALSE, cache=TRUE}
+library(knitr); library(data.table); library(caret); library(plyr); library(dplyr); library(magrittr); library(doParallel)
+opts_chunk$set(message=FALSE)
+set.seed(523)
+
+trdata <- fread("pml-training.csv", drop=c(1:5, 7), na.strings=c("NA","","#DIV/0!"), verbose=FALSE, data.table=FALSE) 
+trdata %<>% mutate_each(funs(as.numeric), -new_window, -classe)
+# Drop features with insufficient variance (e.g. mostly or all missing data)
+# Also drop window summary features that don't exist in the test set
+nzv <- nearZeroVar(trdata[trdata$new_window=="no", ])
+trdata %<>% select(-nzv, -new_window) %>% mutate(classe=as.factor(classe))
+
+
+```
+
+#Cross Validation and Exploration
+
+After removing low-value variables, the data set contains `r length(trdata)-1` potential features. First, the data is partitioned into training and testing sets to allow for the estimation of out-of-sample error after model building. Next, Principal Components Analysis is used to reduce the number of features. 
+
+```{r explore, cache=TRUE}
+part <- createDataPartition(trdata$classe, p=.7)
+train <- trdata[part$Resample1, ]
+test <- trdata[-part$Resample1, ]
+
+
+pp <- preProcess(train[,-53], method="pca")
+testpca <- predict(pp, test[,-53])
+trainpca <- predict(pp, train[,-53])
+print(length(trainpca))
+```
+
+The number of principal components needed to preserve 95% of the variance in the original data set is listed above. This reduced the number of variables by half. 
+
+#Model Training
+
+In the following section, the model is trained. A boosted tree method is used via the "gbm" package. 
+
+
+```{r train, cache=TRUE}
+cl <- makePSOCKcluster(4)
+registerDoParallel(cl)
+mod <- train(train$classe ~ ., data=trainpca, method="gbm", verbose=FALSE)
+stopCluster(cl)
+```
+
+#Model Evaluation
+
+With the model built, the testing partition of the data can now be used to estimate out of sample error.
+
+```{r eval, cache=TRUE}
+p <- predict(mod, newdata=testpca)
+confusionMatrix(p, test$classe)
+
+```
+
+The estimated out of sample accuracy is 82%
+
+#Validation
+Finally, the model is used to predict the classes of exercises from the validation data set. The predictions are submitted for evaluation through the course website. 
+
+```{r predict, cache=TRUE}
+
+validation <- as.data.frame(fread("pml-testing.csv", select=names(train), na.strings=c("NA","","#DIV/0!")), colClasses="numeric") 
+
+val_pca <- predict(pp, validation)
+
+val_p <- predict(mod, val_pca)
+
+dir.create("predictions/", showWarnings=FALSE)
+for(i in seq_along(val_p)) {
+  write.table(val_p[i],file=paste0("predictions/case_", 
+                                   as.character(i),".txt")
+              ,quote=FALSE,row.names=FALSE,col.names=FALSE)
+}
+
+
+```
